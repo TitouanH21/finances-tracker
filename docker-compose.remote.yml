@@ -1,0 +1,14 @@
+services:
+  tunnel:
+    image: node:18-alpine
+    container_name: finances-tunnel
+    depends_on:
+      - app
+    command: sh -c "npm install -g localtunnel >/dev/null 2>&1 && lt --port 8501 --print-requests"
+    networks:
+      - default
+    restart: unless-stopped
+
+networks:
+  default:
+    name: compte_default

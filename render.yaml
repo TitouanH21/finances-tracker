@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: finances-app
+    env: docker
+    plan: free
+    branch: main
+    dockerfilePath: Dockerfile
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase: finances-db
+
+  - type: database
+    name: finances-db
+    plan: free
+    databaseName: finances
