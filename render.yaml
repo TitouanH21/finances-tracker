@@ -8,9 +8,11 @@ services:
     autoDeploy: true
     envVars:
       - key: DATABASE_URL
-        fromDatabase: finances-db
+        fromDatabase:
+          name: finances-db
+          property: connectionString
 
-  - type: database
+  - type: postgres
     name: finances-db
     plan: free
     databaseName: finances
