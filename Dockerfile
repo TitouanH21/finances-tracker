@@ -16,13 +16,11 @@ RUN apt-get update \
 
 COPY . .
 
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
+
 EXPOSE 8501
 
-CMD ["streamlit", "run", "app.py", \
-     "--server.address=0.0.0.0", \
-     "--server.port=8501", \
-     "--server.headless=true", \
-     "--client.showErrorDetails=false", \
-     "--logger.level=info"]
+CMD ["/app/start.sh"]
 
 CMD ["streamlit", "run", "app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true"]
