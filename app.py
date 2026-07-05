@@ -163,9 +163,24 @@ ICONS = {
 # DATABASE SETUP
 # -----------------------------------------------------------------------------
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///finance.db")
-engine = create_engine(DATABASE_URL, future=True, pool_pre_ping=True)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
-Base = declarative_base()
+
+# Log database configuration (hide password)
+db_display = DATABASE_URL.replace(DATABASE_URL.split('@')[0].split('://')[-1] if '@' in DATABASE_URL else '', '***') if '@' in DATABASE_URL else DATABASE_URL
+print(f"[DEBUG] Connecting to database: {db_display}")
+
+try:
+    engine = create_engine(DATABASE_URL, future=True, pool_pre_ping=True, echo=False)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    Base = declarative_base()
+    
+    # Test connection
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+    print("[DEBUG] Database connection successful ✓")
+except Exception as e:
+    print(f"[ERROR] Database connection failed: {str(e)}")
+    st.error(f"❌ **Database Error**: {str(e)}")
+    st.stop()
 
 class Expense(Base):
     __tablename__ = "expenses"
@@ -199,18 +214,29 @@ class Income(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 def init_db():
-    if DATABASE_URL.startswith("sqlite"):
-        Base.metadata.create_all(bind=engine)
-        return
-    for attempt in range(30):
-        try:
-            with engine.connect() as connection:
-                connection.execute(text("SELECT 1"))
+    print("[DEBUG] Initializing database tables...")
+    try:
+        if DATABASE_URL.startswith("sqlite"):
             Base.metadata.create_all(bind=engine)
+            print("[DEBUG] SQLite tables created ✓")
             return
-        except Exception:
-            if attempt == 29: raise
-            time.sleep(2)
+        
+        for attempt in range(30):
+            try:
+                with engine.connect() as connection:
+                    connection.execute(text("SELECT 1"))
+                Base.metadata.create_all(bind=engine)
+                print(f"[DEBUG] Database tables initialized on attempt {attempt + 1} ✓")
+                return
+            except Exception as e:
+                if attempt == 29:
+                    print(f"[ERROR] Failed to initialize database after 30 attempts: {str(e)}")
+                    raise
+                print(f"[DEBUG] Retry {attempt + 1}/30 - waiting for database...")
+                time.sleep(2)
+    except Exception as e:
+        print(f"[ERROR] Database initialization failed: {str(e)}")
+        raise
 
 init_db()
 
@@ -229,10 +255,13 @@ def get_transactions_for_month(year: int, month: int, refresh: float = 0) -> pd.
         month_start = date(year, month, 1)
         _, last_day = calendar.monthrange(year, month)
         month_end = date(year, month, last_day)
+        
+        print(f"[DEBUG] Fetching transactions for {year}-{month:02d} ({month_start} to {month_end})")
 
         rows = []
         # Incomes
         incomes = session.query(Income).filter(Income.income_date >= month_start, Income.income_date <= month_end).all()
+        print(f"[DEBUG] Found {len(incomes)} incomes")
         for i in incomes:
             rows.append({
                 "id": i.id,
@@ -248,6 +277,7 @@ def get_transactions_for_month(year: int, month: int, refresh: float = 0) -> pd.
         
         # One-time Expenses
         expenses = session.query(Expense).filter(Expense.expense_date >= month_start, Expense.expense_date <= month_end).all()
+        print(f"[DEBUG] Found {len(expenses)} one-time expenses")
         for e in expenses:
             rows.append({
                 "id": e.id,
@@ -263,6 +293,7 @@ def get_transactions_for_month(year: int, month: int, refresh: float = 0) -> pd.
         
         # Recurring Expenses
         recurring = session.query(RecurringExpense).filter(RecurringExpense.start_date <= month_end).all()
+        print(f"[DEBUG] Found {len(recurring)} recurring expenses (total, filtering active ones)")
         for r in recurring:
             if r.end_date is not None and r.end_date < month_start: continue
             rows.append({
@@ -278,8 +309,12 @@ def get_transactions_for_month(year: int, month: int, refresh: float = 0) -> pd.
             })
 
         df = pd.DataFrame(rows)
+        print(f"[DEBUG] Total {len(df)} transactions loaded ✓")
         if df.empty: return pd.DataFrame(columns=["id", "type", "date", "nom", "montant", "categorie"])
         return df.sort_values(by=["date", "id"], ascending=[False, False]).reset_index(drop=True)
+    except Exception as e:
+        print(f"[ERROR] Failed to fetch transactions: {str(e)}")
+        return pd.DataFrame(columns=["id", "type", "date", "nom", "montant", "categorie"])
     finally:
         session.close()
 
@@ -310,9 +345,12 @@ def get_transaction_record(source: str, tx_id: int):
 def update_transaction_record(source: str, tx_id: int, description: str, amount: float, tx_date: date, tx_type: str, category: str, end_date: date | None = None):
     session = SessionLocal()
     try:
+        print(f"[DEBUG] Updating {source} transaction ID {tx_id}...")
+        
         if source == "income":
             record = session.get(Income, tx_id)
             if record is None:
+                print(f"[ERROR] Income record {tx_id} not found")
                 return False
             record.description = description
             record.amount = amount
@@ -322,15 +360,17 @@ def update_transaction_record(source: str, tx_id: int, description: str, amount:
         elif source == "expense":
             record = session.get(Expense, tx_id)
             if record is None:
+                print(f"[ERROR] Expense record {tx_id} not found")
                 return False
             record.description = description
             record.amount = amount
             record.expense_date = tx_date
             record.expense_type = tx_type
             record.category = category
-        else:
+        elif source == "recurring":
             record = session.get(RecurringExpense, tx_id)
             if record is None:
+                print(f"[ERROR] RecurringExpense record {tx_id} not found")
                 return False
             record.name = description
             record.amount = amount
@@ -338,8 +378,17 @@ def update_transaction_record(source: str, tx_id: int, description: str, amount:
             record.end_date = end_date
             record.expense_type = tx_type
             record.category = category
+        else:
+            print(f"[ERROR] Unknown source: {source}")
+            return False
+            
         session.commit()
+        print(f"[DEBUG] Transaction {source}#{tx_id} updated successfully ✓")
         return True
+    except Exception as e:
+        print(f"[ERROR] Failed to update transaction: {str(e)}")
+        session.rollback()
+        return False
     finally:
         session.close()
 
@@ -501,15 +550,23 @@ def add_transaction_modal():
 
         session = SessionLocal()
         try:
+            print(f"[DEBUG] Adding new transaction: {type_tx} - {nom} ({montant}€)")
+            
             if type_tx == "Dépense ponctuelle":
                 session.add(Expense(description=nom, amount=montant, expense_date=date_tx, expense_type=sub_type, category=category))
             elif type_tx == "Dépense récurrente":
                 session.add(RecurringExpense(name=nom, amount=montant, start_date=date_tx, end_date=end_date, expense_type=sub_type, category=category))
             else:
                 session.add(Income(description=nom, amount=montant, income_date=date_tx, income_type=sub_type, category=category))
+            
             session.commit()
+            print(f"[DEBUG] Transaction saved successfully ✓")
             st.session_state["transaction_refresh"] = time.time()
-            st.success("Transaction ajoutée !")
+            st.success("✓ Transaction ajoutée !")
+        except Exception as e:
+            print(f"[ERROR] Failed to save transaction: {str(e)}")
+            session.rollback()
+            st.error(f"❌ Erreur lors de l'enregistrement: {str(e)}")
         finally:
             session.close()
 
