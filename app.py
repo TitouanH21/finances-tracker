@@ -244,11 +244,22 @@ today = date.today()
 
 # -----------------------------------------------------------------------------
 # DATA LOGIC
-# -----------------------------------------------------------------------------
+# Database refresh mechanism to invalidate Streamlit cache
+def invalidate_cache():
+    """Force cache invalidation by clearing cached function"""
+    if "last_refresh" in st.session_state:
+        st.session_state["last_refresh"] = time.time()
+    st.cache_data.clear()
+    print(f"[DEBUG] Cache invalidated at {time.time()}")
+
+# Initialize refresh token
+if "last_refresh" not in st.session_state:
+    st.session_state["last_refresh"] = 0
+
 def format_currency(value: float) -> str:
     return f"{value:,.2f} €".replace(",", " ")
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=1)
 def get_transactions_for_month(year: int, month: int, refresh: float = 0) -> pd.DataFrame:
     session = SessionLocal()
     try:
@@ -488,9 +499,10 @@ def render_edit_transaction_panel():
                         end_date if is_recurring else None,
                     )
                     if success:
-                        st.success("Transaction modifiée.")
-                        st.session_state["transaction_refresh"] = time.time()
-                        clear_edit_session()
+                        st.success("✓ Transaction modifiée.")
+                        # Force cache invalidation
+                        invalidate_cache()
+                        st.rerun()
                     else:
                         st.error("Impossible de modifier la transaction.")
         with col_cancel:
@@ -561,8 +573,11 @@ def add_transaction_modal():
             
             session.commit()
             print(f"[DEBUG] Transaction saved successfully ✓")
-            st.session_state["transaction_refresh"] = time.time()
-            st.success("✓ Transaction ajoutée !")
+            
+            # Force cache invalidation
+            invalidate_cache()
+            st.rerun()
+            
         except Exception as e:
             print(f"[ERROR] Failed to save transaction: {str(e)}")
             session.rollback()
